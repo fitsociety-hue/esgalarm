@@ -29,89 +29,95 @@ function App() {
   // Background Monitoring Logic
   useEffect(() => {
     let intervalId;
+    let isChecking = false; // Prevent concurrent checks
 
     const processQueue = async () => {
-      if (alarmQueue.length > 0 && isBusinessHours()) {
-        console.log(`Processing ${alarmQueue.length} queued alarms...`);
-        for (const queuedAlarm of alarmQueue) {
-          for (const webhook of webhooks) {
+      const state = useStore.getState();
+      const currentQueue = state.alarmQueue;
+      const currentWebhooks = state.webhooks;
+
+      if (currentQueue.length > 0 && isBusinessHours()) {
+        console.log(`Processing ${currentQueue.length} queued alarms...`);
+        for (const queuedAlarm of currentQueue) {
+          for (const webhook of currentWebhooks) {
             await sendGoogleChatMessage(webhook.url, queuedAlarm.post, queuedAlarm.title);
-            addLog({
+            state.addLog({
               type: 'ALARM_SENT',
               message: `(예약발송) '${queuedAlarm.padletName}'의 새 게시글 알림을 발송했습니다.`,
               status: 'success'
             });
           }
         }
-        clearAlarmQueue();
+        state.clearAlarmQueue();
       }
     };
 
     const checkPadlets = async () => {
-      if (!monitoring.isActive || webhooks.length === 0 || padlets.length === 0) return;
-
-      console.log('Checking padlets for new posts...');
+      if (isChecking) return;
       
-      // Process any delayed alarms if we just entered business hours
-      await processQueue();
-      
-      for (const padlet of padlets) {
-        if (!padlet.url) continue;
+      const state = useStore.getState();
+      if (!state.monitoring.isActive || state.webhooks.length === 0 || state.padlets.length === 0) return;
 
-        const result = await fetchPadletFeed(padlet.url);
+      isChecking = true;
+      try {
+        console.log('Checking padlets for new posts...');
         
-        if (result.success && result.posts.length > 0) {
-          // Find all posts newer than lastCheckedDate
-          // If never checked, only alert the very latest one (index 0) to avoid spam
-          let newPosts = [];
-          if (!padlet.lastCheckedDate) {
-             newPosts = [result.posts[0]];
-          } else {
-             const lastDate = new Date(padlet.lastCheckedDate);
-             newPosts = result.posts.filter(p => new Date(p.pubDate) > lastDate);
-          }
+        await processQueue();
+        
+        for (const padlet of state.padlets) {
+          if (!padlet.url) continue;
 
-          if (newPosts.length > 0) {
-            for (const post of newPosts) {
-              console.log(`New post/comment found on ${padlet.name}:`, post.title);
-              
-              if (isBusinessHours()) {
-                // Send immediately
-                for (const webhook of webhooks) {
-                  await sendGoogleChatMessage(webhook.url, post, `새로운 패들렛 알람: ${padlet.name}`);
-                  addLog({
-                    type: 'ALARM_SENT',
-                    message: `'${padlet.name}'의 새 게시글 알림을 '${webhook.name}'(으)로 발송했습니다.`,
-                    status: 'success'
+          const result = await fetchPadletFeed(padlet.url);
+          
+          if (result.success && result.posts.length > 0) {
+            let newPosts = [];
+            if (!padlet.lastCheckedDate) {
+               newPosts = [result.posts[0]];
+            } else {
+               const lastDate = new Date(padlet.lastCheckedDate);
+               newPosts = result.posts.filter(p => new Date(p.pubDate) > lastDate);
+            }
+
+            if (newPosts.length > 0) {
+              for (const post of newPosts) {
+                console.log(`New post/comment found on ${padlet.name}:`, post.title);
+                
+                if (isBusinessHours()) {
+                  for (const webhook of state.webhooks) {
+                    await sendGoogleChatMessage(webhook.url, post, `새로운 패들렛 알람: ${padlet.name}`);
+                    state.addLog({
+                      type: 'ALARM_SENT',
+                      message: `'${padlet.name}'의 새 게시글 알림을 '${webhook.name}'(으)로 발송했습니다.`,
+                      status: 'success'
+                    });
+                  }
+                } else {
+                  state.enqueueAlarm({ padletName: padlet.name, post, title: `새로운 패들렛 알람: ${padlet.name}` });
+                  state.addLog({
+                    type: 'ALARM_QUEUED',
+                    message: `'${padlet.name}'의 새 알림이 업무시간 외에 발생하여 대기열에 추가되었습니다.`,
+                    status: 'info'
                   });
                 }
-              } else {
-                // Queue for later
-                enqueueAlarm({ padletName: padlet.name, post, title: `새로운 패들렛 알람: ${padlet.name}` });
-                addLog({
-                  type: 'ALARM_QUEUED',
-                  message: `'${padlet.name}'의 새 알림이 업무시간 외에 발생하여 대기열에 추가되었습니다.`,
-                  status: 'info'
-                });
               }
+              
+              state.updatePadlet(padlet.id, { 
+                lastPostId: newPosts[0].id, 
+                lastCheckedDate: new Date().toISOString() 
+              });
+            } else {
+              state.updatePadlet(padlet.id, { lastCheckedDate: new Date().toISOString() });
             }
-            
-            updatePadlet(padlet.id, { 
-              lastPostId: newPosts[0].id, 
-              lastCheckedDate: new Date().toISOString() 
+          } else if (!result.success) {
+            state.addLog({
+              type: 'ERROR',
+              message: `'${padlet.name}' 패들렛 확인 중 오류 발생: ${result.error}`,
+              status: 'error'
             });
-          } else {
-            // Just update last checked time if needed
-            // Actually better to only update when new things happen, or update to current time
-            updatePadlet(padlet.id, { lastCheckedDate: new Date().toISOString() });
           }
-        } else if (!result.success) {
-          addLog({
-            type: 'ERROR',
-            message: `'${padlet.name}' 패들렛 확인 중 오류 발생: ${result.error}`,
-            status: 'error'
-          });
         }
+      } finally {
+        isChecking = false;
       }
     };
 
@@ -123,7 +129,7 @@ function App() {
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [monitoring.isActive, monitoring.interval, padlets, webhooks, alarmQueue]);
+  }, [monitoring.isActive, monitoring.interval]);
 
   return (
     <HashRouter>
