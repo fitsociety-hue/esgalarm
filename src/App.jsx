@@ -10,7 +10,31 @@ import { fetchPadletFeed } from './services/padletService';
 import { sendGoogleChatMessage } from './services/webhookService';
 
 function App() {
-  const { monitoring, padlets, webhooks, updatePadlet, addLog, alarmQueue, enqueueAlarm, clearAlarmQueue } = useStore();
+  const { monitoring, padlets, webhooks, backendUrl, updatePadlet, addLog, alarmQueue, enqueueAlarm, clearAlarmQueue } = useStore();
+
+  // Sync to GAS Backend whenever config changes
+  useEffect(() => {
+    if (backendUrl && backendUrl.startsWith('https://script.google.com/')) {
+      const syncToBackend = async () => {
+        try {
+          await fetch(backendUrl, {
+            method: 'POST',
+            mode: 'no-cors', // Important for GAS to avoid preflight issues from frontend
+            headers: {
+              'Content-Type': 'text/plain', // Use text/plain for GAS simple POST
+            },
+            body: JSON.stringify({ padlets, webhooks })
+          });
+          console.log("Synced config to GAS backend successfully.");
+        } catch (err) {
+          console.error("Failed to sync to GAS backend:", err);
+        }
+      };
+      // Debounce the sync slightly to avoid multiple calls when adding items quickly
+      const timeoutId = setTimeout(syncToBackend, 1000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [padlets, webhooks, backendUrl]);
 
   // Helper to check KST business hours
   const isBusinessHours = () => {

@@ -1,25 +1,48 @@
 import React, { useState } from 'react';
 import useStore from '../store/useStore';
-import { Copy, CheckCircle, TerminalSquare } from 'lucide-react';
+import { Copy, CheckCircle, Save, Link as LinkIcon, Server } from 'lucide-react';
 
 const Background = () => {
-  const { padlets, webhooks } = useStore();
+  const { backendUrl, setBackendUrl } = useStore();
   const [copied, setCopied] = useState(false);
+  const [urlInput, setUrlInput] = useState(backendUrl || '');
+  const [saveStatus, setSaveStatus] = useState('');
+
+  const handleSaveUrl = () => {
+    setBackendUrl(urlInput);
+    setSaveStatus('saved');
+    setTimeout(() => setSaveStatus(''), 3000);
+  };
 
   const generateGASCode = () => {
     return `/**
  * ESG 알람 자동화 스크립트 (Google Apps Script)
- * 이 스크립트를 복사하여 Google Apps Script (script.google.com) 에 붙여넣고,
- * '시간 기반 트리거(1분 또는 5분)'를 설정하세요.
+ * 백엔드 서버 모드 - 앱과 자동으로 연동됩니다.
  * 
  * 생성일: ${new Date().toLocaleString('ko-KR')}
  */
 
-// === 설정 데이터 (앱에서 자동 생성됨) ===
-const CONFIG = {
-  padlets: ${JSON.stringify(padlets.map(p => ({ url: p.url, name: p.name, id: p.id })), null, 4)},
-  webhooks: ${JSON.stringify(webhooks.map(w => ({ url: w.url, name: w.name })), null, 4)}
-};
+// ==========================================
+// 웹앱 URL 통신 설정 (프론트엔드 연동)
+// ==========================================
+
+function doPost(e) {
+  try {
+    const data = JSON.parse(e.postData.contents);
+    PropertiesService.getScriptProperties().setProperty('esgConfig', JSON.stringify(data));
+    return ContentService.createTextOutput(JSON.stringify({success: true, message: "설정 저장 완료"}))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch(err) {
+    return ContentService.createTextOutput(JSON.stringify({success: false, error: err.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  const config = PropertiesService.getScriptProperties().getProperty('esgConfig');
+  return ContentService.createTextOutput(config || '{"padlets":[], "webhooks":[]}')
+    .setMimeType(ContentService.MimeType.JSON);
+}
 
 // ==========================================
 // 아래 코드는 수정하지 마세요.
@@ -203,7 +226,11 @@ function isBusinessHours(now) {
 
 // 이 함수가 트리거로 실행될 메인 함수입니다.
 function checkEsgAlarms() {
-  if (CONFIG.padlets.length === 0 || CONFIG.webhooks.length === 0) return;
+  const configStr = PropertiesService.getScriptProperties().getProperty('esgConfig');
+  if (!configStr) return; // 프론트엔드에서 아직 설정이 연동되지 않음
+  
+  const CONFIG = JSON.parse(configStr);
+  if (!CONFIG.padlets || CONFIG.padlets.length === 0 || !CONFIG.webhooks || CONFIG.webhooks.length === 0) return;
   
   const props = PropertiesService.getScriptProperties();
   const queueStr = props.getProperty('ALARM_QUEUE');
@@ -268,8 +295,43 @@ function checkEsgAlarms() {
   return (
     <div className="dashboard-container" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       <div>
-        <h1>백그라운드 실행 관리</h1>
-        <p>브라우저를 닫아도 24시간 동안 구글 챗 알람을 받기 위한 설정입니다.</p>
+        <h1>백그라운드 서버 연동 (GAS)</h1>
+        <p>Google Apps Script를 나만의 무료 서버로 만들어 24시간 알람을 수신하세요.</p>
+      </div>
+
+      <div className="card glass-panel" style={{ borderLeft: backendUrl ? '4px solid #10b981' : '4px solid #f59e0b' }}>
+        <div className="card-header">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Server size={20} color={backendUrl ? '#10b981' : '#f59e0b'} />
+            <h3 style={{ margin: 0 }}>서버(웹앱) URL 설정</h3>
+          </div>
+        </div>
+        <div style={{ padding: '0 1.5rem 1.5rem 1.5rem' }}>
+          <p style={{ marginTop: 0, color: 'var(--text-light)', fontSize: '0.9rem' }}>
+            Apps Script 배포 후 얻은 <strong>웹앱 URL (https://script.google.com/.../exec)</strong>을 아래에 입력하시면, 패들렛과 웹훅을 추가할 때마다 자동으로 서버에 반영됩니다.
+          </p>
+          <div style={{ display: 'flex', gap: '1rem' }}>
+            <div className="input-with-icon" style={{ flex: 1, display: 'flex', alignItems: 'center', background: 'var(--bg-color)', border: '1px solid var(--glass-border)', borderRadius: '8px', padding: '0 0.75rem' }}>
+              <LinkIcon size={18} color="var(--text-light)" />
+              <input 
+                type="text" 
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                style={{ flex: 1, border: 'none', background: 'transparent', padding: '0.75rem', outline: 'none', color: 'var(--text-dark)' }}
+              />
+            </div>
+            <button className="btn btn-primary" onClick={handleSaveUrl}>
+              {saveStatus === 'saved' ? <CheckCircle size={18} /> : <Save size={18} />}
+              {saveStatus === 'saved' ? '저장됨!' : 'URL 연동하기'}
+            </button>
+          </div>
+          {backendUrl && (
+            <div style={{ marginTop: '1rem', fontSize: '0.85rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <CheckCircle size={16} /> 백엔드 서버가 성공적으로 연동되었습니다! (설정 변경 시 자동 동기화됨)
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="card glass-panel">
@@ -278,20 +340,16 @@ function checkEsgAlarms() {
         </div>
         <div style={{ padding: '0 1.5rem 1.5rem 1.5rem', lineHeight: '1.6' }}>
           <div className="alert-info" style={{ background: '#eff6ff', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid #bfdbfe' }}>
-            <h4 style={{ margin: '0 0 0.5rem 0', color: '#1e3a8a' }}>💡 왜 필요한가요?</h4>
-            <p style={{ margin: 0, color: '#1e40af' }}>
-              이 사이트는 무료 프론트엔드 환경에서 동작하기 때문에 <strong>웹 브라우저를 열어두어야만 알람이 작동</strong>합니다.
-              창을 닫아도 작동하게 하려면, 구글의 무료 클라우드 서버(Apps Script)에 아래 코드를 등록해야 합니다.
-            </p>
+            <h4 style={{ margin: '0 0 0.5rem 0', color: '#1e3a8a' }}>💡 연동 방법 안내</h4>
+            <ol style={{ paddingLeft: '1.5rem', margin: 0, color: '#1e40af' }}>
+              <li>아래 <strong>[코드 복사하기]</strong> 버튼을 누릅니다. (이제 코드를 한 번만 적용하면 됩니다!)</li>
+              <li><a href="https://script.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--primary-blue)', fontWeight: 'bold' }}>Google Apps Script (script.google.com)</a> 에 접속하여 새 프로젝트를 만듭니다.</li>
+              <li>기존 코드를 모두 지우고, 복사한 코드를 붙여넣기 한 후 저장(Ctrl+S)합니다.</li>
+              <li>우측 상단의 <strong>[배포] - [새 배포]</strong>를 클릭하고, 유형을 <strong>웹 앱</strong>으로 선택합니다.</li>
+              <li>액세스 권한을 <strong>'모든 사용자(Anyone)'</strong>로 설정하고 배포한 뒤, 제공되는 <strong>웹앱 URL</strong>을 복사하여 위 설정 칸에 붙여넣고 연동합니다.</li>
+              <li>마지막으로 왼쪽 메뉴에서 <strong>트리거(시계 모양)</strong>를 클릭하고 <code>checkEsgAlarms</code> 함수를 <strong>시간 기반 (5분마다)</strong>으로 실행되도록 설정하면 끝입니다!</li>
+            </ol>
           </div>
-
-          <ol style={{ paddingLeft: '1.5rem', marginBottom: '1.5rem' }}>
-            <li>아래 <strong>[코드 복사하기]</strong> 버튼을 누릅니다. (현재 등록된 패들렛과 웹훅 정보가 자동 포함됩니다)</li>
-            <li><a href="https://script.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--primary-blue)', fontWeight: 'bold' }}>Google Apps Script (script.google.com)</a> 에 접속하여 새 프로젝트를 만듭니다.</li>
-            <li>기존 코드를 모두 지우고, 복사한 코드를 붙여넣기 한 후 저장(Ctrl+S)합니다.</li>
-            <li>왼쪽 메뉴에서 <strong>트리거(시계 모양 아이콘)</strong>를 클릭하고 <code>checkEsgAlarms</code> 함수를 <strong>시간 기반 (1분 또는 5분 단위)</strong>으로 실행되도록 설정합니다.</li>
-            <li>권한 승인 창이 뜨면 승인합니다. 완료!</li>
-          </ol>
 
           <div style={{ position: 'relative' }}>
             <button 

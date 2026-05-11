@@ -8,6 +8,7 @@ const useStore = create(
       webhooks: [],
       logs: [],
       alarmQueue: [],
+      backendUrl: '',
       monitoring: {
         isActive: false,
         interval: 5, // minutes
@@ -44,6 +45,9 @@ const useStore = create(
       // Alarm Queue Actions
       enqueueAlarm: (alarm) => set((state) => ({ alarmQueue: [...state.alarmQueue, alarm] })),
       clearAlarmQueue: () => set({ alarmQueue: [] }),
+      
+      // Backend Settings
+      setBackendUrl: (url) => set({ backendUrl: url }),
       
       // Monitoring Actions
       setMonitoring: (updates) => set((state) => ({
