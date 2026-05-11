@@ -283,6 +283,25 @@ function checkEsgAlarms() {
     }
   });
 }
+
+// ==========================================
+// 트리거 자동 설정 함수 (이 함수를 한 번 실행하세요!)
+// ==========================================
+function installTrigger() {
+  // 기존 트리거가 있다면 모두 삭제
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    ScriptApp.deleteTrigger(triggers[i]);
+  }
+  
+  // 1분 단위로 실시간 확인하는 트리거 생성
+  ScriptApp.newTrigger('checkEsgAlarms')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+    
+  console.log("✅ 1분 단위 실시간 확인 트리거가 성공적으로 설정되었습니다!");
+}
 `;
   };
 
@@ -296,7 +315,7 @@ function checkEsgAlarms() {
     <div className="dashboard-container" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       <div>
         <h1>백그라운드 서버 연동 (GAS)</h1>
-        <p>Google Apps Script를 나만의 무료 서버로 만들어 24시간 알람을 수신하세요.</p>
+        <p>Google Apps Script를 나만의 무료 서버로 만들어 24시간 실시간 알람을 수신하세요.</p>
       </div>
 
       <div className="card glass-panel" style={{ borderLeft: backendUrl ? '4px solid #10b981' : '4px solid #f59e0b' }}>
@@ -340,14 +359,13 @@ function checkEsgAlarms() {
         </div>
         <div style={{ padding: '0 1.5rem 1.5rem 1.5rem', lineHeight: '1.6' }}>
           <div className="alert-info" style={{ background: '#eff6ff', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid #bfdbfe' }}>
-            <h4 style={{ margin: '0 0 0.5rem 0', color: '#1e3a8a' }}>💡 연동 방법 안내</h4>
+            <h4 style={{ margin: '0 0 0.5rem 0', color: '#1e3a8a' }}>💡 연동 방법 안내 (실시간 1분 모니터링)</h4>
             <ol style={{ paddingLeft: '1.5rem', margin: 0, color: '#1e40af' }}>
-              <li>아래 <strong>[코드 복사하기]</strong> 버튼을 누릅니다. (이제 코드를 한 번만 적용하면 됩니다!)</li>
-              <li><a href="https://script.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--primary-blue)', fontWeight: 'bold' }}>Google Apps Script (script.google.com)</a> 에 접속하여 새 프로젝트를 만듭니다.</li>
-              <li>기존 코드를 모두 지우고, 복사한 코드를 붙여넣기 한 후 저장(Ctrl+S)합니다.</li>
+              <li>아래 <strong>[코드 복사하기]</strong> 버튼을 누릅니다.</li>
+              <li><a href="https://script.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--primary-blue)', fontWeight: 'bold' }}>Google Apps Script (script.google.com)</a> 에 접속하여 프로젝트의 코드를 교체하고 저장(Ctrl+S)합니다.</li>
               <li>우측 상단의 <strong>[배포] - [새 배포]</strong>를 클릭하고, 유형을 <strong>웹 앱</strong>으로 선택합니다.</li>
               <li>액세스 권한을 <strong>'모든 사용자(Anyone)'</strong>로 설정하고 배포한 뒤, 제공되는 <strong>웹앱 URL</strong>을 복사하여 위 설정 칸에 붙여넣고 연동합니다.</li>
-              <li>마지막으로 왼쪽 메뉴에서 <strong>트리거(시계 모양)</strong>를 클릭하고 <code>checkEsgAlarms</code> 함수를 <strong>시간 기반 (5분마다)</strong>으로 실행되도록 설정하면 끝입니다!</li>
+              <li>마지막으로 상단 메뉴바의 실행 버튼 왼쪽에 있는 함수 선택 드롭다운에서 <code>installTrigger</code>를 선택하고 <strong>[실행]</strong> 버튼을 1회 누릅니다. (권한 허용 창이 뜨면 승인합니다). 이제 실시간(1분) 확인이 자동으로 시작됩니다!</li>
             </ol>
           </div>
 
