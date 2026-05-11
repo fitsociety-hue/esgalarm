@@ -36,6 +36,14 @@ const Sidebar = () => {
           구글 챗 웹훅
         </NavLink>
 
+        <NavLink 
+          to="/background" 
+          className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}
+        >
+          <Settings size={20} />
+          백그라운드 실행
+        </NavLink>
+
         <div style={{ marginTop: 'auto', paddingTop: '2rem' }}>
           <div className="nav-item" style={{ fontSize: '0.8rem', color: 'var(--text-light)', cursor: 'default' }}>
             v1.0.0

@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import Padlets from './pages/Padlets';
 import Webhooks from './pages/Webhooks';
+import Background from './pages/Background';
 import useStore from './store/useStore';
 import { fetchPadletFeed } from './services/padletService';
 import { sendGoogleChatMessage } from './services/webhookService';
@@ -140,6 +141,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/padlets" element={<Padlets />} />
             <Route path="/webhooks" element={<Webhooks />} />
+            <Route path="/background" element={<Background />} />
           </Routes>
         </main>
       </div>
