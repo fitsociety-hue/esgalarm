@@ -7,6 +7,7 @@ const useStore = create(
       padlets: [],
       webhooks: [],
       logs: [],
+      alarmQueue: [],
       monitoring: {
         isActive: false,
         interval: 5, // minutes
@@ -39,6 +40,10 @@ const useStore = create(
         logs: [{ ...log, id: Date.now().toString(), timestamp: new Date().toISOString() }, ...state.logs].slice(0, 500)
       })),
       clearLogs: () => set({ logs: [] }),
+
+      // Alarm Queue Actions
+      enqueueAlarm: (alarm) => set((state) => ({ alarmQueue: [...state.alarmQueue, alarm] })),
+      clearAlarmQueue: () => set({ alarmQueue: [] }),
       
       // Monitoring Actions
       setMonitoring: (updates) => set((state) => ({

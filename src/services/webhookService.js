@@ -5,8 +5,61 @@ import axios from 'axios';
  * @param {string} webhookUrl - The Google Chat Webhook URL
  * @param {object} payload - The message payload
  */
-export const sendGoogleChatMessage = async (webhookUrl, message, title = '새로운 알림') => {
+export const sendGoogleChatMessage = async (webhookUrl, postData, customTitle) => {
   try {
+    let widgets = [];
+    let title = customTitle || '새로운 알림';
+
+    if (typeof postData === 'object' && postData !== null) {
+      title = `새로운 패들렛 알람`;
+      widgets = [
+        {
+          keyValue: {
+            topLabel: '카테고리',
+            content: postData.category || '기본',
+            contentMultiline: true
+          }
+        },
+        {
+          keyValue: {
+            topLabel: '작성자',
+            content: postData.author || '익명',
+            contentMultiline: true
+          }
+        },
+        {
+          textParagraph: {
+            text: `<b>게시글 내용:</b><br>${postData.description || postData.title || ''}`
+          }
+        }
+      ];
+
+      if (postData.link) {
+        widgets.push({
+          buttons: [
+            {
+              textButton: {
+                text: '게시글 바로가기',
+                onClick: {
+                  openLink: {
+                    url: postData.link
+                  }
+                }
+              }
+            }
+          ]
+        });
+      }
+    } else {
+      widgets = [
+        {
+          textParagraph: {
+            text: String(postData)
+          }
+        }
+      ];
+    }
+
     const payload = {
       cardsV2: [
         {
@@ -20,13 +73,7 @@ export const sendGoogleChatMessage = async (webhookUrl, message, title = '새로
             },
             sections: [
               {
-                widgets: [
-                  {
-                    textParagraph: {
-                      text: message
-                    }
-                  }
-                ]
+                widgets: widgets
               }
             ]
           }
