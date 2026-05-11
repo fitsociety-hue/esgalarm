@@ -14,17 +14,17 @@ export const sendGoogleChatMessage = async (webhookUrl, postData, customTitle) =
       title = `새로운 패들렛 알람`;
       widgets = [
         {
-          keyValue: {
+          decoratedText: {
             topLabel: '카테고리',
-            content: postData.category || '기본',
-            contentMultiline: true
+            text: postData.category || '기본',
+            wrapText: true
           }
         },
         {
-          keyValue: {
+          decoratedText: {
             topLabel: '작성자',
-            content: postData.author || '익명',
-            contentMultiline: true
+            text: postData.author || '익명',
+            wrapText: true
           }
         },
         {
@@ -36,9 +36,9 @@ export const sendGoogleChatMessage = async (webhookUrl, postData, customTitle) =
 
       if (postData.link) {
         widgets.push({
-          buttons: [
-            {
-              textButton: {
+          buttonList: {
+            buttons: [
+              {
                 text: '게시글 바로가기',
                 onClick: {
                   openLink: {
@@ -46,8 +46,8 @@ export const sendGoogleChatMessage = async (webhookUrl, postData, customTitle) =
                   }
                 }
               }
-            }
-          ]
+            ]
+          }
         });
       }
     } else {
