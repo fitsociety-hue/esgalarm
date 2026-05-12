@@ -1,6 +1,7 @@
 /**
  * ESG 알람 자동화 스크립트 (Google Apps Script)
  * 백엔드 서버 모드 - 앱과 자동으로 연동됩니다.
+ * v2.1 - 업무시간 외 게시글 오전 9시 예약발송 버그 수정
  */
 
 // ==========================================
@@ -199,10 +200,42 @@ function sendChat(webhookUrl, postData, customTitle) {
   }
 }
 
+/**
+ * 업무시간 여부 판단 (평일 09:00~18:00 KST)
+ */
 function isBusinessHours(now) {
   const kstHour = parseInt(Utilities.formatDate(now, "Asia/Seoul", "HH"), 10);
-  const kstDay = parseInt(Utilities.formatDate(now, "Asia/Seoul", "u"), 10); // 1 = Monday, 7 = Sunday
+  const kstDay = parseInt(Utilities.formatDate(now, "Asia/Seoul", "u"), 10); // 1=월, 7=일
   return (kstDay >= 1 && kstDay <= 5 && kstHour >= 9 && kstHour < 18);
+}
+
+/**
+ * 오전 9시 예약발송 기준 시각 계산
+ * - 평일 00:00~08:59 게시글 → 당일 09:00 발송
+ * - 주말(토/일) 게시글 → 다음 월요일 09:00 발송
+ */
+function getNextDeliveryTime(now) {
+  const kstDay  = parseInt(Utilities.formatDate(now, "Asia/Seoul", "u"), 10); // 1=월 ... 7=일
+  const kstHour = parseInt(Utilities.formatDate(now, "Asia/Seoul", "HH"), 10);
+
+  // KST 기준 오늘 00:00:00
+  const todayKST = new Date(Utilities.formatDate(now, "Asia/Seoul", "yyyy-MM-dd") + "T00:00:00+09:00");
+
+  if (kstDay >= 1 && kstDay <= 5) {
+    // 평일: 아직 09:00 이전이면 오늘 09:00
+    if (kstHour < 9) {
+      return new Date(todayKST.getTime() + 9 * 3600 * 1000);
+    }
+    // 이미 18:00 이후면 다음 평일 09:00 (단순화: +1일, 혹은 금→월)
+    const daysUntilMonday = kstDay === 5 ? 3 : 1; // 금요일이면 3일 후 월요일
+    return new Date(todayKST.getTime() + daysUntilMonday * 24 * 3600 * 1000 + 9 * 3600 * 1000);
+  } else if (kstDay === 6) {
+    // 토요일 → 다음 월요일(+2일) 09:00
+    return new Date(todayKST.getTime() + 2 * 24 * 3600 * 1000 + 9 * 3600 * 1000);
+  } else {
+    // 일요일 → 내일(월요일) 09:00
+    return new Date(todayKST.getTime() + 1 * 24 * 3600 * 1000 + 9 * 3600 * 1000);
+  }
 }
 
 // 이 함수가 트리거로 실행될 메인 함수입니다.
@@ -214,53 +247,89 @@ function checkEsgAlarms() {
   if (!CONFIG.padlets || CONFIG.padlets.length === 0 || !CONFIG.webhooks || CONFIG.webhooks.length === 0) return;
   
   const props = PropertiesService.getScriptProperties();
-  const queueStr = props.getProperty('ALARM_QUEUE');
-  let alarmQueue = queueStr ? JSON.parse(queueStr) : [];
-  
   const now = new Date();
   const businessHours = isBusinessHours(now);
-  
-  // 영업시간이면 대기열 발송
+
+  // ------------------------------------------------------------------
+  // 1단계: 대기열에 쌓인 예약 알람 발송 (업무 시작 시간 09:00 이후)
+  //        deliverAt 시각이 현재 시각 이후인 항목만 발송
+  // ------------------------------------------------------------------
+  const queueStr = props.getProperty('ALARM_QUEUE');
+  let alarmQueue = queueStr ? JSON.parse(queueStr) : [];
+
   if (alarmQueue.length > 0 && businessHours) {
-    alarmQueue.forEach(q => sendChat(q.webhookUrl, q.post, q.title));
-    alarmQueue = [];
+    const nowMs = now.getTime();
+    const toSend  = alarmQueue.filter(q => !q.deliverAt || q.deliverAt <= nowMs);
+    const pending  = alarmQueue.filter(q =>  q.deliverAt && q.deliverAt >  nowMs);
+
+    toSend.forEach(q => sendChat(q.webhookUrl, q.post, q.title));
+
+    alarmQueue = pending;
     props.setProperty('ALARM_QUEUE', JSON.stringify(alarmQueue));
+    console.log("✅ 예약 알람 " + toSend.length + "건 발송 완료, 대기 중: " + pending.length + "건");
   }
-  
+
+  // ------------------------------------------------------------------
+  // 2단계: 새 게시글 감지 및 알람 발송 / 큐 등록
+  // ------------------------------------------------------------------
   CONFIG.padlets.forEach(padlet => {
     const posts = fetchPadletData(padlet.url);
-    if (posts.length > 0) {
-      const lastCheckedKey = 'LAST_CHECK_' + padlet.id;
-      const lastCheckedStr = props.getProperty(lastCheckedKey);
-      
-      let newPosts = [];
-      if (!lastCheckedStr) {
-         // 최초 실행 시 현재 시간만 저장하고 알람은 보내지 않음
-         props.setProperty(lastCheckedKey, now.getTime().toString());
-         return;
-      } else {
-         const lastDate = parseInt(lastCheckedStr, 10);
-         newPosts = posts.filter(p => p.pubDate > lastDate);
-      }
-      
-      if (newPosts.length > 0) {
-        newPosts.forEach(post => {
-          const title = "새로운 패들렛 알람: " + padlet.name;
-          CONFIG.webhooks.forEach(wh => {
-            if (businessHours) {
-              sendChat(wh.url, post, title);
-            } else {
-              alarmQueue.push({ webhookUrl: wh.url, post: post, title: "(예약발송) " + title });
+    if (posts.length === 0) return;
+
+    const lastCheckedKey = 'LAST_CHECK_' + padlet.id;
+    const lastCheckedStr = props.getProperty(lastCheckedKey);
+
+    if (!lastCheckedStr) {
+      // 최초 실행 시: 현재 시간을 기준으로 저장하고 알람은 보내지 않음
+      props.setProperty(lastCheckedKey, now.getTime().toString());
+      console.log("🔧 최초 실행 - 기준 시각 저장: " + padlet.name);
+      return;
+    }
+
+    const lastDate = parseInt(lastCheckedStr, 10);
+    const newPosts = posts.filter(p => p.pubDate > lastDate);
+
+    if (newPosts.length > 0) {
+      let queueUpdated = false;
+
+      newPosts.forEach(post => {
+        const title = "새로운 패들렛 알람: " + padlet.name;
+
+        CONFIG.webhooks.forEach(wh => {
+          if (businessHours) {
+            // 업무시간: 즉시 발송
+            sendChat(wh.url, post, title);
+            console.log("📢 즉시 발송: " + post.author + " - " + post.title);
+          } else {
+            // 업무시간 외: 다음 발송 가능 시각(오전 9시)에 예약
+            const deliverAt = getNextDeliveryTime(now).getTime();
+
+            // 중복 등록 방지: 동일 post.id + webhookUrl 조합이 이미 큐에 없는 경우만 추가
+            const isDuplicate = alarmQueue.some(q => q.postId === post.id && q.webhookUrl === wh.url);
+            if (!isDuplicate) {
+              alarmQueue.push({
+                webhookUrl: wh.url,
+                post: post,
+                postId: post.id,                    // 중복 방지 키
+                title: "(예약발송) " + title,
+                deliverAt: deliverAt                // 발송 예정 시각 (ms)
+              });
+              queueUpdated = true;
+              console.log("⏰ 예약 등록: " + post.author + " - " + post.title +
+                          " → " + new Date(deliverAt).toLocaleString('ko-KR'));
             }
-          });
+          }
         });
-        
-        if (!businessHours) {
-           props.setProperty('ALARM_QUEUE', JSON.stringify(alarmQueue));
-        }
-        
-        props.setProperty(lastCheckedKey, now.getTime().toString());
+      });
+
+      // 큐가 변경된 경우에만 저장
+      if (queueUpdated) {
+        props.setProperty('ALARM_QUEUE', JSON.stringify(alarmQueue));
       }
+
+      // ⚠️ 핵심 수정: lastCheckedKey는 새 게시글 처리 후 반드시 업데이트
+      //    (업무시간 외 큐 등록 후에도 업데이트하여 중복 감지 방지)
+      props.setProperty(lastCheckedKey, now.getTime().toString());
     }
   });
 }
@@ -282,4 +351,39 @@ function installTrigger() {
     .create();
     
   console.log("✅ 1분 단위 실시간 확인 트리거가 성공적으로 설정되었습니다!");
+}
+
+// ==========================================
+// 디버그: 현재 대기열 확인용 (수동 실행)
+// ==========================================
+function debugShowQueue() {
+  const props = PropertiesService.getScriptProperties();
+  const queueStr = props.getProperty('ALARM_QUEUE');
+  const queue = queueStr ? JSON.parse(queueStr) : [];
+  console.log("📋 현재 대기열 (" + queue.length + "건):");
+  queue.forEach((q, i) => {
+    console.log("  [" + (i+1) + "] " + q.post.author + " - " + q.post.title +
+                " | 발송 예정: " + (q.deliverAt ? new Date(q.deliverAt).toLocaleString('ko-KR') : '즉시'));
+  });
+}
+
+// ==========================================
+// 긴급 수동 발송: 대기열을 즉시 전부 발송 (수동 실행)
+// ==========================================
+function forceFlushQueue() {
+  const props = PropertiesService.getScriptProperties();
+  const configStr = props.getProperty('esgConfig');
+  if (!configStr) { console.log("설정 없음"); return; }
+
+  const queueStr = props.getProperty('ALARM_QUEUE');
+  const queue = queueStr ? JSON.parse(queueStr) : [];
+
+  if (queue.length === 0) {
+    console.log("대기열이 비어 있습니다.");
+    return;
+  }
+
+  queue.forEach(q => sendChat(q.webhookUrl, q.post, "🚨 (수동발송) " + q.title));
+  props.setProperty('ALARM_QUEUE', JSON.stringify([]));
+  console.log("✅ 대기열 " + queue.length + "건 수동 발송 완료.");
 }
