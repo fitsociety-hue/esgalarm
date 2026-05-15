@@ -1,7 +1,7 @@
 /**
  * ESG 알람 자동화 스크립트 (Google Apps Script)
  * 백엔드 서버 모드 - 앱과 자동으로 연동됩니다.
- * v2.1 - 업무시간 외 게시글 오전 9시 예약발송 버그 수정
+ * v2.2 - 중복 알람 완전 방지 (Lock + SENT_IDS 추적)
  */
 
 // ==========================================
@@ -238,8 +238,44 @@ function getNextDeliveryTime(now) {
   }
 }
 
+/**
+ * 이미 발송된 postId 목록을 가져오고 추가/정리하는 헬퍼
+ * 최대 500개까지 보관 (PropertyService 10KB 제한 고려)
+ */
+function getSentIds(props) {
+  const raw = props.getProperty('SENT_IDS');
+  return raw ? JSON.parse(raw) : [];
+}
+
+function addSentIds(props, ids) {
+  let sentIds = getSentIds(props);
+  ids.forEach(id => { if (!sentIds.includes(id)) sentIds.push(id); });
+  // 최대 500개 보관 (오래된 것 자동 삭제)
+  if (sentIds.length > 500) sentIds = sentIds.slice(sentIds.length - 500);
+  props.setProperty('SENT_IDS', JSON.stringify(sentIds));
+}
+
 // 이 함수가 트리거로 실행될 메인 함수입니다.
 function checkEsgAlarms() {
+  // ============================================================
+  // 🔒 Lock: 동일 시각 병렬 트리거 실행 방지 (중복 발송 핵심 차단)
+  // ============================================================
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000); // 최대 30초 대기 후 락 획득
+  } catch (e) {
+    console.log("⚠️ 이미 다른 실행이 진행 중입니다. 이번 실행은 건너뜁니다.");
+    return;
+  }
+
+  try {
+    _runCheckEsgAlarms();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function _runCheckEsgAlarms() {
   const configStr = PropertiesService.getScriptProperties().getProperty('esgConfig');
   if (!configStr) return; // 프론트엔드에서 아직 설정이 연동되지 않음
   
@@ -252,7 +288,7 @@ function checkEsgAlarms() {
 
   // ------------------------------------------------------------------
   // 1단계: 대기열에 쌓인 예약 알람 발송 (업무 시작 시간 09:00 이후)
-  //        deliverAt 시각이 현재 시각 이후인 항목만 발송
+  //        deliverAt 시각이 현재 시각 이전인 항목만 발송
   // ------------------------------------------------------------------
   const queueStr = props.getProperty('ALARM_QUEUE');
   let alarmQueue = queueStr ? JSON.parse(queueStr) : [];
@@ -262,16 +298,28 @@ function checkEsgAlarms() {
     const toSend  = alarmQueue.filter(q => !q.deliverAt || q.deliverAt <= nowMs);
     const pending  = alarmQueue.filter(q =>  q.deliverAt && q.deliverAt >  nowMs);
 
-    toSend.forEach(q => sendChat(q.webhookUrl, q.post, q.title));
+    // 발송 전 SENT_IDS로 최종 중복 체크
+    const sentIds = getSentIds(props);
+    const trulyNew = toSend.filter(q => !sentIds.includes(q.postId + '_' + q.webhookUrl));
+
+    trulyNew.forEach(q => sendChat(q.webhookUrl, q.post, q.title));
+
+    // 발송된 ID 기록
+    if (trulyNew.length > 0) {
+      addSentIds(props, trulyNew.map(q => q.postId + '_' + q.webhookUrl));
+    }
 
     alarmQueue = pending;
     props.setProperty('ALARM_QUEUE', JSON.stringify(alarmQueue));
-    console.log("✅ 예약 알람 " + toSend.length + "건 발송 완료, 대기 중: " + pending.length + "건");
+    console.log("✅ 예약 알람 " + trulyNew.length + "건 발송 완료 (중복 제외: " + (toSend.length - trulyNew.length) + "건), 대기 중: " + pending.length + "건");
   }
 
   // ------------------------------------------------------------------
   // 2단계: 새 게시글 감지 및 알람 발송 / 큐 등록
   // ------------------------------------------------------------------
+  const sentIds = getSentIds(props); // 최신 상태 재로드
+  let queueUpdated = false;
+
   CONFIG.padlets.forEach(padlet => {
     const posts = fetchPadletData(padlet.url);
     if (posts.length === 0) return;
@@ -290,15 +338,22 @@ function checkEsgAlarms() {
     const newPosts = posts.filter(p => p.pubDate > lastDate);
 
     if (newPosts.length > 0) {
-      let queueUpdated = false;
-
       newPosts.forEach(post => {
         const title = "새로운 패들렛 알람: " + padlet.name;
 
         CONFIG.webhooks.forEach(wh => {
+          const sentKey = post.id + '_' + wh.url;
+
+          // ✅ SENT_IDS로 이미 발송된 알람인지 최종 확인
+          if (sentIds.includes(sentKey)) {
+            console.log("🚫 중복 발송 차단: " + post.author + " - " + post.title);
+            return;
+          }
+
           if (businessHours) {
             // 업무시간: 즉시 발송
             sendChat(wh.url, post, title);
+            sentIds.push(sentKey); // 로컬 목록에 즉시 추가 (반복 방지)
             console.log("📢 즉시 발송: " + post.author + " - " + post.title);
           } else {
             // 업무시간 외: 다음 발송 가능 시각(오전 9시)에 예약
@@ -322,12 +377,15 @@ function checkEsgAlarms() {
         });
       });
 
+      // 즉시 발송된 ID 일괄 저장
+      addSentIds(props, sentIds);
+
       // 큐가 변경된 경우에만 저장
       if (queueUpdated) {
         props.setProperty('ALARM_QUEUE', JSON.stringify(alarmQueue));
       }
 
-      // ⚠️ 핵심 수정: lastCheckedKey는 새 게시글 처리 후 반드시 업데이트
+      // ⚠️ 핵심: lastCheckedKey는 새 게시글 처리 후 반드시 업데이트
       //    (업무시간 외 큐 등록 후에도 업데이트하여 중복 감지 방지)
       props.setProperty(lastCheckedKey, now.getTime().toString());
     }
@@ -338,7 +396,7 @@ function checkEsgAlarms() {
 // 트리거 자동 설정 함수 (이 함수를 한 번 실행하세요!)
 // ==========================================
 function installTrigger() {
-  // 기존 트리거가 있다면 모두 삭제
+  // 기존 트리거를 모두 삭제 (중복 트리거 방지)
   const triggers = ScriptApp.getProjectTriggers();
   for (let i = 0; i < triggers.length; i++) {
     ScriptApp.deleteTrigger(triggers[i]);
@@ -350,7 +408,9 @@ function installTrigger() {
     .everyMinutes(1)
     .create();
     
-  console.log("✅ 1분 단위 실시간 확인 트리거가 성공적으로 설정되었습니다!");
+  // 트리거 개수 검증
+  const newTriggers = ScriptApp.getProjectTriggers();
+  console.log("✅ 1분 단위 실시간 확인 트리거 설정 완료! (총 트리거 수: " + newTriggers.length + "개)");
 }
 
 // ==========================================
@@ -365,6 +425,9 @@ function debugShowQueue() {
     console.log("  [" + (i+1) + "] " + q.post.author + " - " + q.post.title +
                 " | 발송 예정: " + (q.deliverAt ? new Date(q.deliverAt).toLocaleString('ko-KR') : '즉시'));
   });
+
+  const sentIds = getSentIds(props);
+  console.log("📌 발송 완료된 ID 수: " + sentIds.length + "개");
 }
 
 // ==========================================
@@ -383,7 +446,19 @@ function forceFlushQueue() {
     return;
   }
 
-  queue.forEach(q => sendChat(q.webhookUrl, q.post, "🚨 (수동발송) " + q.title));
+  const sentIds = getSentIds(props);
+  const trulyNew = queue.filter(q => !sentIds.includes(q.postId + '_' + q.webhookUrl));
+
+  trulyNew.forEach(q => sendChat(q.webhookUrl, q.post, "🚨 (수동발송) " + q.title));
+  addSentIds(props, trulyNew.map(q => q.postId + '_' + q.webhookUrl));
   props.setProperty('ALARM_QUEUE', JSON.stringify([]));
-  console.log("✅ 대기열 " + queue.length + "건 수동 발송 완료.");
+  console.log("✅ 대기열 " + trulyNew.length + "건 수동 발송 완료 (중복 제외: " + (queue.length - trulyNew.length) + "건).");
+}
+
+// ==========================================
+// 발송 이력 초기화 (문제 발생 시 수동 실행)
+// ==========================================
+function resetSentIds() {
+  PropertiesService.getScriptProperties().deleteProperty('SENT_IDS');
+  console.log("✅ SENT_IDS 초기화 완료.");
 }
